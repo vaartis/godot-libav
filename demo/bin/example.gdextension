@@ -1,0 +1,13 @@
+[configuration]
+
+entry_symbol = "godot_libav_library_init"
+compatibility_minimum = "4.1"
+
+[libraries]
+
+macos.debug = "res://bin/macos/libgodot-libav.macos.template_debug.framework"
+macos.release = "res://bin/macos/libgodot-libav.macos.template_release.framework"
+windows.debug.x86_64 = "res://bin/windows/libgodot-libav.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://bin/windows/libgodot-libav.windows.template_release.x86_64.dll"
+linux.debug.x86_64 = "res://bin/linux/libgodot-libav.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://bin/linux/libgodot-libav.linux.template_release.x86_64.so"
