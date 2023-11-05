@@ -30,7 +30,7 @@ public:
 
     virtual double _get_length() const override;
     virtual double _get_playback_position() const override;
-    //virtual void _seek(double time);
+    virtual void _seek(double time) override;
 
     virtual bool _is_playing() const override;
     virtual void _set_paused(bool paused) override;
@@ -41,6 +41,8 @@ public:
 
     virtual int32_t _get_channels() const override;
     virtual int32_t _get_mix_rate() const override;
+
+    ~VideoStreamPlaybackLibAV();
 protected:
     static void _bind_methods();
 
@@ -72,6 +74,8 @@ private:
     SwrContext *swr;
 
     Ref<ImageTexture> texture;
+
+    void clear();
 };
 
 class VideoStreamLibAV : public VideoStream {
@@ -100,4 +104,7 @@ public:
 
 protected:
     static void _bind_methods();
+
+private:
+    static PackedStringArray extensionsFromSettings();
 };
