@@ -25,7 +25,17 @@ public:
 
     void set_file(String file);
 
+    virtual void _stop() override;
+    virtual void _play() override;
+
+    virtual double _get_length() const override;
+    virtual double _get_playback_position() const override;
+    //virtual void _seek(double time);
+
     virtual bool _is_playing() const override;
+    virtual void _set_paused(bool paused) override;
+    virtual bool _is_paused() const override;
+
     virtual void _update(double delta) override;
     virtual Ref<Texture2D> _get_texture() const override;
 
@@ -35,6 +45,10 @@ protected:
     static void _bind_methods();
 
 private:
+    bool playing = false;
+    bool paused = false;
+
+    String file;
     double time = 0;
     int64_t last_pts = 0;
 
@@ -43,6 +57,11 @@ private:
 
     AVFormatContext *formatContext = nullptr;
 
+    AVPacket *packet = nullptr;
+    AVFrame *frame = nullptr, *audioFrame = nullptr,
+        *rgb8Frame = nullptr, *fltFrame = nullptr;
+
+    AVStream *videoStream = nullptr, *audioStream = nullptr;
     const AVCodec *videoCodec = nullptr, *audioCodec = nullptr;
     const AVCodecParameters *videoCodecParameters = nullptr,
         *audioCodecParameters = nullptr;

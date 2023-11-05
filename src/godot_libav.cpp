@@ -5,15 +5,28 @@
 
 #include "godot_libav.hpp"
 
+const AVPixelFormat pixelFormat = AV_PIX_FMT_RGBA;
+const Image::Format godotPixelFormat = Image::FORMAT_RGBA8;
+
 VideoStreamPlaybackLibAV::VideoStreamPlaybackLibAV() {
     texture = Ref<ImageTexture>(memnew(ImageTexture));
-
-    formatContext = avformat_alloc_context();
 }
 
 void VideoStreamPlaybackLibAV::_bind_methods() { }
 
 void VideoStreamPlaybackLibAV::set_file(String file) {
+    this->file = file;
+    time = 0;
+    last_pts = 0;
+
+    if (formatContext != nullptr) {
+        avformat_free_context(formatContext);
+
+        avcodec_free_context(&videoCodecContext);
+        avcodec_free_context(&audioCodecContext);
+    }
+
+    formatContext = avformat_alloc_context();
     String path = ProjectSettings::get_singleton()->globalize_path(file);
     if (avformat_open_input(&formatContext, path.utf8().get_data(), nullptr, nullptr) != 0) {
         ERR_PRINT("Could not open the file");
@@ -33,19 +46,44 @@ void VideoStreamPlaybackLibAV::set_file(String file) {
     avcodec_parameters_to_context(videoCodecContext, videoCodecParameters);
     avcodec_open2(videoCodecContext, videoCodec, nullptr);
 
+    videoStream = formatContext->streams[videoIndex];
+
+    if (frame != nullptr) {
+        av_frame_free(&frame);
+        av_frame_free(&rgb8Frame);
+        av_frame_free(&audioFrame);
+        av_frame_free(&fltFrame);
+        sws_freeContext(sws);
+        swr_free(&swr);
+        av_packet_free(&packet);
+    }
+
+    // Video frame
+    frame = av_frame_alloc();
+    // Frame for RGB8 conversion
+    rgb8Frame = av_frame_alloc();
+    rgb8Frame->width = frame->width;
+    rgb8Frame->height = frame->height;
+    rgb8Frame->format = pixelFormat;
+
     audioCodecContext = avcodec_alloc_context3(audioCodec);
     avcodec_parameters_to_context(audioCodecContext, audioCodecParameters);
     avcodec_open2(audioCodecContext, audioCodec, nullptr);
+
+    audioStream = formatContext->streams[audioIndex];
+    audioFrame = av_frame_alloc();
+    // Frame for non-planar float conversion
+    fltFrame = av_frame_alloc();
+    fltFrame->format = AV_SAMPLE_FMT_FLT;
 
     channels = audioCodecContext->ch_layout.nb_channels;
     mixRate = audioCodecContext->sample_rate;
 
     sws = sws_getContext(
         videoCodecContext->width, videoCodecContext->height, videoCodecContext->pix_fmt,
-        videoCodecContext->width, videoCodecContext->height, AV_PIX_FMT_RGB32,
-        SWS_BICUBIC, nullptr, nullptr, nullptr
+        videoCodecContext->width, videoCodecContext->height, pixelFormat,
+        SWS_BILINEAR, nullptr, nullptr, nullptr
     );
-    // TODO: change from bicubic to a parameter
 
     swr = swr_alloc();
     swr_alloc_set_opts2(
@@ -55,21 +93,11 @@ void VideoStreamPlaybackLibAV::set_file(String file) {
         0, nullptr
     );
     swr_init(swr);
+
+    packet = av_packet_alloc();
 }
 
 Ref<Texture2D> VideoStreamPlaybackLibAV::_get_texture() const { return texture; }
-
-bool check(int response) {
-    if (response < 0) {
-        char errbuf[1024];
-        av_make_error_string(errbuf, 1024, response);
-        ERR_PRINT(errbuf);
-
-        return true;
-    }
-
-    return false;
-}
 
 int32_t VideoStreamPlaybackLibAV::_get_channels() const {
     return channels;
@@ -79,8 +107,47 @@ int32_t VideoStreamPlaybackLibAV::_get_mix_rate() const {
     return mixRate;
 }
 
+void VideoStreamPlaybackLibAV::_play() {
+    playing = true;
+}
+
+void VideoStreamPlaybackLibAV::_stop() {
+    playing = false;
+    paused = false;
+
+    set_file(file);
+}
+
+double VideoStreamPlaybackLibAV::_get_length() const {
+    return videoStream->duration * ((double)videoStream->time_base.num / videoStream->time_base.den);
+}
+
+double VideoStreamPlaybackLibAV::_get_playback_position() const {
+    return last_pts * ((double)videoStream->time_base.num / videoStream->time_base.den);
+}
+
+bool VideoStreamPlaybackLibAV::_is_paused() const {
+    return paused;
+}
+void VideoStreamPlaybackLibAV::_set_paused(bool pause) {
+    paused = pause;
+}
+
 void VideoStreamPlaybackLibAV::_update(double delta) {
-    auto decode_packet = [this](
+    if (!playing || paused) return;
+
+    auto check = [](int response) {
+        if (response < 0) {
+            char errbuf[1024];
+            av_make_error_string(errbuf, 1024, response);
+            ERR_PRINT(errbuf);
+
+            return true;
+        }
+
+        return false;
+    };
+    auto decode_packet = [this, &check](
         AVPacket *packet, AVCodecContext *codecContext, AVFrame *frame
     ) {
         // Supply raw packet data as input to a decoder
@@ -101,33 +168,26 @@ void VideoStreamPlaybackLibAV::_update(double delta) {
 
             if (response >= 0) {
                 if (codecContext->codec_type == AVMEDIA_TYPE_VIDEO) {
-                    //declare destination frame
-                    AVFrame* frame_rgb8 = av_frame_alloc();
-                    frame_rgb8->width = frame->width;
-                    frame_rgb8->height = frame->height;
-                    frame_rgb8->format = AV_PIX_FMT_RGB32;
-
-                    int num_bytes = av_image_get_buffer_size(AV_PIX_FMT_RGB32, frame->width, frame->height, 1);
+                    int num_bytes = av_image_get_buffer_size(pixelFormat, frame->width, frame->height, 1);
                     PackedByteArray dataArr;
                     dataArr.resize(num_bytes);
 
                     response =
-                        av_image_fill_arrays(frame_rgb8->data, frame_rgb8->linesize, dataArr.ptrw(), AV_PIX_FMT_RGB32, frame->width, frame->height, 1);
-                    if (check(response))
+                        av_image_fill_arrays(rgb8Frame->data, rgb8Frame->linesize, dataArr.ptrw(), pixelFormat, frame->width, frame->height, 1);
+                    if (check(response)) {
                         return response;
+                    }
 
                     sws_scale(sws,
                               frame->data, frame->linesize, 0, frame->height,
-                              frame_rgb8->data, frame_rgb8->linesize
+                              rgb8Frame->data, rgb8Frame->linesize
                     );
 
-                    Ref<Image> img = Image::create_from_data(frame->width, frame->height, false, Image::FORMAT_RGBA8, dataArr);
+                    Ref<Image> img = Image::create_from_data(frame->width, frame->height, false, godotPixelFormat, dataArr);
                     if (texture->get_image() == nullptr)
                         texture->set_image(img);
                     else
                         texture->update(img);
-
-                    av_frame_unref(frame_rgb8);
                 } else if (codecContext->codec_type == AVMEDIA_TYPE_AUDIO) {
                     int num_bytes = av_samples_get_buffer_size(
                         nullptr, frame->ch_layout.nb_channels, frame->nb_samples, (AVSampleFormat)AV_SAMPLE_FMT_FLT, 1
@@ -135,12 +195,9 @@ void VideoStreamPlaybackLibAV::_update(double delta) {
                     PackedFloat32Array dataArr;
                     dataArr.resize(num_bytes);
 
-                    AVFrame* frame_flt = av_frame_alloc();
-                    frame_flt->format = AV_SAMPLE_FMT_FLT;
-
                     response =
                         av_samples_fill_arrays(
-                            (uint8_t**)&frame_flt->data, frame_flt->linesize, (const uint8_t *)dataArr.ptrw(),
+                            (uint8_t**)&fltFrame->data, fltFrame->linesize, (const uint8_t *)dataArr.ptrw(),
                             frame->ch_layout.nb_channels, frame->nb_samples, (AVSampleFormat)AV_SAMPLE_FMT_FLT,
                             1
                         );
@@ -148,13 +205,11 @@ void VideoStreamPlaybackLibAV::_update(double delta) {
 
                     response = swr_convert(
                         swr,
-                        (uint8_t**)&frame_flt->data, frame->nb_samples,
+                        (uint8_t**)&fltFrame->data, frame->nb_samples,
                         (const uint8_t**)&frame->data, frame->nb_samples);
                     if (check(response)) return response;
 
                     mix_audio(frame->nb_samples, dataArr, 0);
-
-                    av_frame_unref(frame_flt);
                 }
             }
         }
@@ -164,15 +219,7 @@ void VideoStreamPlaybackLibAV::_update(double delta) {
 
     time += delta;
 
-    AVStream *stream = formatContext->streams[videoIndex];
-    AVFrame *frame = av_frame_alloc();
-    AVPacket *packet = av_packet_alloc();
-
     int response = 0;
-
-    AVStream *audioStream = formatContext->streams[audioIndex];
-    AVFrame *audioFrame = av_frame_alloc();
-
     // Fill the Packet with data from the Stream
     while (av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoIndex) {
@@ -180,7 +227,7 @@ void VideoStreamPlaybackLibAV::_update(double delta) {
             if (response < 0)
                 break;
 
-            if ((packet->pts * ((double)stream->time_base.num / stream->time_base.den)) > time)
+            if ((packet->pts * ((double)videoStream->time_base.num / videoStream->time_base.den)) > time)
                 break;
         } else if (packet->stream_index == audioIndex) {
             response = decode_packet(packet, audioCodecContext, audioFrame);
@@ -193,12 +240,20 @@ void VideoStreamPlaybackLibAV::_update(double delta) {
 
         av_packet_unref(packet);
     }
+    if (response == AVERROR_EOF) {
+        playing = false;
+        paused = false;
+        texture->update(Image::create(frame->width, frame->height, false, godotPixelFormat));
+    }
 
     av_frame_unref(frame);
+    av_frame_unref(audioFrame);
+    av_frame_unref(rgb8Frame);
+    av_frame_unref(fltFrame);
 }
 
 bool VideoStreamPlaybackLibAV::_is_playing() const {
-    return true;
+    return playing;
 }
 
 void VideoStreamLibAV::_bind_methods() {
