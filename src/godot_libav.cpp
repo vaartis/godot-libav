@@ -11,6 +11,12 @@
             av_make_error_string(errbuf, 256, response); \
             ERR_FAIL_V_MSG(response, _STR(func) " failed " + String(errbuf)); \
         }
+#define CHECK_AV_N(func, response) \
+        if (response < 0) { \
+            char errbuf[256]; \
+            av_make_error_string(errbuf, 256, response); \
+            ERR_FAIL_MSG(_STR(func) " failed " + String(errbuf)); \
+        }
 
 const AVPixelFormat pixelFormat = AV_PIX_FMT_RGBA;
 const Image::Format godotPixelFormat = Image::FORMAT_RGBA8;
@@ -29,14 +35,11 @@ void VideoStreamPlaybackLibAV::set_file(String file) {
 
     formatContext = avformat_alloc_context();
     String path = ProjectSettings::get_singleton()->globalize_path(file);
-    if (avformat_open_input(&formatContext, path.utf8().get_data(), nullptr, nullptr) != 0) {
-        ERR_PRINT("Could not open the file");
-        return;
-    }
-    if (avformat_find_stream_info(formatContext,  NULL) < 0) {
-        ERR_PRINT("Could not get the stream info");
-        return;
-    }
+    int result = avformat_open_input(&formatContext, path.utf8().get_data(), nullptr, nullptr);
+    CHECK_AV_N(avformat_open_input, result);
+
+    result = avformat_find_stream_info(formatContext,  NULL);
+    CHECK_AV_N(avformat_find_stream_info, result);
 
     videoIndex = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, &videoCodec, 0);
     videoCodecParameters = formatContext->streams[videoIndex]->codecpar;

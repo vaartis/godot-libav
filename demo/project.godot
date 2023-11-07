@@ -14,3 +14,7 @@ config/name="godot cpp template"
 config/features=PackedStringArray("4.1", "Forward Plus")
 run/max_fps=30
 config/icon="res://icon.svg"
+
+[godot_libav]
+
+extensions=PackedStringArray("mp4", "webm")
